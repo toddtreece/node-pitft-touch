@@ -58,7 +58,11 @@ NAN_METHOD(Async) {
     touchInfo->error = false;
     touchInfo->stop = false;
 
-    ts_config(touchInfo->ts);
+    ts_load_module(touchInfo->ts, "input", " \t");
+    ts_load_module(touchInfo->ts, "pthres", "pmin=2 \t");
+    ts_load_module(touchInfo->ts, "variance", "delta=40 \t");
+    ts_load_module(touchInfo->ts, "dejitter", "delta=100 \t");
+    ts_load_module(touchInfo->ts, "linear", " \t");
 
     uv_work_t *req = new uv_work_t();
     req->data = touchInfo;
@@ -102,26 +106,23 @@ void AsyncAfter(uv_work_t* req) {
 
     } else {
 
-        if(touchInfo->read == 1) {
+        Local<Object> touch = NanNew<Object>();
+        touch->Set(NanNew<String>("x"), NanNew<Number>(touchInfo->samp->x));
+        touch->Set(NanNew<String>("y"), NanNew<Number>(touchInfo->samp->y));
+        touch->Set(NanNew<String>("pressure"), NanNew<Number>(touchInfo->samp->pressure));
+        touch->Set(NanNew<String>("stop"), NanNew<Boolean>(touchInfo->stop));
+        touch->Set(NanNew<String>("touch"), NanNew<Number>(touchInfo->read));
 
-          Local<Object> touch = NanNew<Object>();
-          touch->Set(NanNew<String>("x"), NanNew<Number>(touchInfo->samp->x));
-          touch->Set(NanNew<String>("y"), NanNew<Number>(touchInfo->samp->y));
-          touch->Set(NanNew<String>("pressure"), NanNew<Number>(touchInfo->samp->pressure));
-          touch->Set(NanNew<String>("stop"), NanNew<Boolean>(touchInfo->stop));
+        const unsigned argc = 2;
+        Local<Value> argv[argc] = { NanNull(), NanNew(touch) };
 
-          const unsigned argc = 2;
-          Local<Value> argv[argc] = { NanNull(), NanNew(touch) };
+        TryCatch try_catch;
 
-          TryCatch try_catch;
+        touchInfo->callback->Call(NanGetCurrentContext()->Global(), argc, argv);
+        touchInfo->stop = touch->Get(NanNew<String>("stop"))->BooleanValue();
 
-          touchInfo->callback->Call(NanGetCurrentContext()->Global(), argc, argv);
-          touchInfo->stop = touch->Get(NanNew<String>("stop"))->BooleanValue();
-
-          if (try_catch.HasCaught()) {
-            FatalException(try_catch);
-          }
-
+        if (try_catch.HasCaught()) {
+          FatalException(try_catch);
         }
 
         if (touchInfo->stop) {
