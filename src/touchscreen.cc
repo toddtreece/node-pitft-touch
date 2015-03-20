@@ -4,6 +4,8 @@
 #include <node.h>
 #include <nan.h>
 
+#include <tslib.h>
+
 using namespace v8;
 using namespace node;
 
@@ -12,13 +14,13 @@ void AsyncWork(uv_work_t* req);
 void AsyncAfter(uv_work_t* req);
 
 struct TouchInfo {
-    int fileDescriptor;
     NanCallback *callback;
+    struct tsdev *ts;
+    struct ts_sample *samp;
 
     bool error;
     std::string errorMessage;
 
-    struct input_event inputEvents[64];
     int read;
 
     int x;
@@ -50,10 +52,13 @@ NAN_METHOD(Async) {
     NanUtf8String *path = new NanUtf8String(args[0]);
 
     TouchInfo* touchInfo = new TouchInfo();
-    touchInfo->fileDescriptor = open(**path, O_RDONLY);
+    touchInfo->ts = ts_open(**path, 0);
     touchInfo->callback = new NanCallback(args[1].As<Function>());
+    touchInfo->samp = new ts_sample();
     touchInfo->error = false;
     touchInfo->stop = false;
+
+    ts_config(touchInfo->ts);
 
     uv_work_t *req = new uv_work_t();
     req->data = touchInfo;
@@ -68,9 +73,9 @@ NAN_METHOD(Async) {
 void AsyncWork(uv_work_t* req) {
     TouchInfo* touchInfo = static_cast<TouchInfo*>(req->data);
 
-    touchInfo->read = read(touchInfo->fileDescriptor, touchInfo->inputEvents, sizeof(struct input_event) * 64);
+    touchInfo->read = ts_read(touchInfo->ts, touchInfo->samp, 1);
 
-    if (touchInfo->read < (int) sizeof(struct input_event)) {
+    if (touchInfo->read < 0) {
         touchInfo->error = true;
         touchInfo->errorMessage = "Read problem";
     }
@@ -94,35 +99,29 @@ void AsyncAfter(uv_work_t* req) {
         if (try_catch.HasCaught()) {
             FatalException(try_catch);
         }
+
     } else {
-        for (unsigned i = 0; i < touchInfo->read / sizeof(struct input_event); i++) {
-            if (touchInfo->inputEvents[i].type == EV_SYN) {
-            } else if (touchInfo->inputEvents[i].type == EV_ABS && (touchInfo->inputEvents[i].code == ABS_Y)) {
-                touchInfo->x = touchInfo->inputEvents[i].value;
-            } else if (touchInfo->inputEvents[i].type == EV_ABS && (touchInfo->inputEvents[i].code == ABS_X)) {
-                touchInfo->y = touchInfo->inputEvents[i].value;
-            } else if (touchInfo->inputEvents[i].type == EV_ABS && (touchInfo->inputEvents[i].code == ABS_PRESSURE)) {
-                touchInfo->pressure = touchInfo->inputEvents[i].value;
-            } else if (touchInfo->inputEvents[i].type == EV_KEY && (touchInfo->inputEvents[i].code == BTN_TOUCH)) {
-                 Local<Object> touch = NanNew<Object>();
-                 touch->Set(NanNew<String>("x"), NanNew<Number>(touchInfo->x));
-                 touch->Set(NanNew<String>("y"), NanNew<Number>(touchInfo->y));
-                 touch->Set(NanNew<String>("pressure"), NanNew<Number>(touchInfo->pressure));
-                 touch->Set(NanNew<String>("touch"), NanNew<Number>(touchInfo->inputEvents[i].value));
-                 touch->Set(NanNew<String>("stop"), NanNew<Boolean>(touchInfo->stop));
 
-                 const unsigned argc = 2;
-                 Local<Value> argv[argc] = { NanNull(), NanNew(touch) };
+        if(touchInfo->read == 1) {
 
-                 TryCatch try_catch;
+          Local<Object> touch = NanNew<Object>();
+          touch->Set(NanNew<String>("x"), NanNew<Number>(touchInfo->samp->x));
+          touch->Set(NanNew<String>("y"), NanNew<Number>(touchInfo->samp->y));
+          touch->Set(NanNew<String>("pressure"), NanNew<Number>(touchInfo->samp->pressure));
+          touch->Set(NanNew<String>("stop"), NanNew<Boolean>(touchInfo->stop));
 
-                 touchInfo->callback->Call(NanGetCurrentContext()->Global(), argc, argv);
-                 touchInfo->stop = touch->Get(NanNew<String>("stop"))->BooleanValue();
+          const unsigned argc = 2;
+          Local<Value> argv[argc] = { NanNull(), NanNew(touch) };
 
-                 if (try_catch.HasCaught()) {
-                     FatalException(try_catch);
-                 }
-            }
+          TryCatch try_catch;
+
+          touchInfo->callback->Call(NanGetCurrentContext()->Global(), argc, argv);
+          touchInfo->stop = touch->Get(NanNew<String>("stop"))->BooleanValue();
+
+          if (try_catch.HasCaught()) {
+            FatalException(try_catch);
+          }
+
         }
 
         if (touchInfo->stop) {
@@ -133,6 +132,7 @@ void AsyncAfter(uv_work_t* req) {
             int status = uv_queue_work(uv_default_loop(), req, AsyncWork, (uv_after_work_cb)AsyncAfter);
             assert(status == 0);
         }
+
     }
 }
 
